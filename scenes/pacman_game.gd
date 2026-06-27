@@ -1,6 +1,10 @@
 extends Node2D
 
 const TILE_SIZE := 24
+const MIN_TILE_SIZE := 12.0
+const MAX_TILE_SIZE := 44.0
+const HUD_HEIGHT := 56.0
+const TOUCH_PANEL_SIZE := Vector2(248, 300)
 const MAZE := [
 	"###################",
 	"#........#........#",
@@ -64,17 +68,22 @@ var win := false
 var player_moved_last_step := false
 var mouth_phase := 0.0
 var mouth_speed := 12.0
+var board_tile_size := TILE_SIZE
+var board_origin := Vector2.ZERO
 var hud_label: Label
 var message_label: Label
+var restart_button: Button
 var sfx_player: AudioStreamPlayer
 var sfx_playback: AudioStreamGeneratorPlayback
 
 func _ready() -> void:
+	get_viewport().size_changed.connect(_update_layout)
 	_build_pellets()
 	_create_ghosts()
 	_create_hud()
 	_create_touch_controls()
 	_create_audio()
+	_update_layout()
 	set_process(true)
 	queue_redraw()
 
@@ -129,20 +138,28 @@ func _create_touch_controls() -> void:
 
 	var panel := Control.new()
 	panel.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
-	panel.position = Vector2(12, -184)
-	panel.size = Vector2(180, 180)
+	panel.position = Vector2(12, -TOUCH_PANEL_SIZE.y - 12)
+	panel.size = TOUCH_PANEL_SIZE
 	canvas.add_child(panel)
 
-	_add_touch_button(panel, "U", Vector2(60, 0), Vector2i.UP)
-	_add_touch_button(panel, "L", Vector2(0, 60), Vector2i.LEFT)
-	_add_touch_button(panel, "R", Vector2(120, 60), Vector2i.RIGHT)
-	_add_touch_button(panel, "D", Vector2(60, 120), Vector2i.DOWN)
+	_add_touch_button(panel, "U", Vector2(80, 0), Vector2i.UP)
+	_add_touch_button(panel, "L", Vector2(0, 80), Vector2i.LEFT)
+	_add_touch_button(panel, "R", Vector2(160, 80), Vector2i.RIGHT)
+	_add_touch_button(panel, "D", Vector2(80, 160), Vector2i.DOWN)
+
+	restart_button = Button.new()
+	restart_button.text = "START / RESTART"
+	restart_button.position = Vector2(20, 236)
+	restart_button.size = Vector2(208, 44)
+	restart_button.modulate = Color(0.1, 0.1, 0.18, 0.82)
+	restart_button.pressed.connect(_restart_game)
+	panel.add_child(restart_button)
 
 func _add_touch_button(parent: Control, text: String, pos: Vector2, dir: Vector2i) -> void:
 	var b := Button.new()
 	b.text = text
 	b.position = pos
-	b.size = Vector2(56, 56)
+	b.size = Vector2(72, 72)
 	b.modulate = Color(0.1, 0.1, 0.18, 0.72)
 	parent.add_child(b)
 	b.button_down.connect(func() -> void:
@@ -272,7 +289,7 @@ func _check_collisions() -> void:
 func _set_end_state(did_win: bool) -> void:
 	game_over = true
 	win = did_win
-	message_label.text = "YOU WIN! Press Enter to restart" if win else "CAUGHT! Press Enter to restart"
+	message_label.text = "YOU WIN! Tap START / RESTART" if win else "CAUGHT! Tap START / RESTART"
 
 func _restart_game() -> void:
 	pellets.clear()
@@ -292,13 +309,37 @@ func _restart_game() -> void:
 	ghosts.clear()
 	_create_ghosts()
 	message_label.text = ""
+	_update_layout()
+	queue_redraw()
+
+func _update_layout() -> void:
+	var viewport_size := get_viewport_rect().size
+	var board_width := float(map_size.x * TILE_SIZE)
+	var board_height := float(map_size.y * TILE_SIZE)
+	var fit_width := (viewport_size.x - 16.0) / board_width
+	var fit_height := (viewport_size.y - HUD_HEIGHT - TOUCH_PANEL_SIZE.y - 24.0) / board_height
+	var fit_scale := clampf(minf(fit_width, fit_height), 0.5, 2.5)
+	board_tile_size = int(round(TILE_SIZE * fit_scale))
+	var board_pixel_width := float(map_size.x * board_tile_size)
+	var board_pixel_height := float(map_size.y * board_tile_size)
+	board_origin = Vector2(
+		maxf(8.0, (viewport_size.x - board_pixel_width) * 0.5),
+		HUD_HEIGHT + maxf(8.0, (viewport_size.y - HUD_HEIGHT - TOUCH_PANEL_SIZE.y - board_pixel_height) * 0.5)
+	)
+	message_label.size = Vector2(map_size.x * board_tile_size, 48)
+	message_label.position = Vector2(0, board_origin.y + board_pixel_height * 0.45)
+	message_label.add_theme_font_size_override("font_size", int(maxf(24.0, board_tile_size * 1.15)))
+	if restart_button != null:
+		restart_button.text = "START / RESTART" if not game_over else "TAP TO RESTART"
+	queue_redraw()
 
 func _draw() -> void:
+	var offset := board_origin
 	for y in MAZE.size():
 		var row: String = MAZE[y]
 		for x in row.length():
 			var cell := row.substr(x, 1)
-			var rect := Rect2(x * TILE_SIZE, y * TILE_SIZE, TILE_SIZE, TILE_SIZE)
+			var rect := Rect2(offset.x + x * board_tile_size, offset.y + y * board_tile_size, board_tile_size, board_tile_size)
 			if cell == "#":
 				draw_rect(rect, Color(0.05, 0.1, 0.65))
 				draw_rect(rect.grow(-2.0), Color(0.1, 0.15, 0.85), false, 2.0)
@@ -306,7 +347,7 @@ func _draw() -> void:
 	for key in pellets.keys():
 		var p: Vector2i = _parse_key(key)
 		var pellet_type: String = pellets[key]
-		var radius := 3.0 if pellet_type == "." else 6.0
+		var radius := board_tile_size * (0.13 if pellet_type == "." else 0.24)
 		draw_circle(_cell_center(p), radius, Color(1.0, 0.85, 0.5))
 
 	_draw_player()
@@ -314,13 +355,13 @@ func _draw() -> void:
 	for ghost in ghosts:
 		var gp: Vector2i = ghost["pos"]
 		var center := _cell_center(gp)
-		draw_circle(center, TILE_SIZE * 0.4, _ghost_draw_color(ghost))
-		draw_circle(center + Vector2(-5, -3), 2.0, Color.WHITE)
-		draw_circle(center + Vector2(5, -3), 2.0, Color.WHITE)
+		draw_circle(center, board_tile_size * 0.4, _ghost_draw_color(ghost))
+		draw_circle(center + Vector2(-board_tile_size * 0.2, -board_tile_size * 0.12), board_tile_size * 0.08, Color.WHITE)
+		draw_circle(center + Vector2(board_tile_size * 0.2, -board_tile_size * 0.12), board_tile_size * 0.08, Color.WHITE)
 
 func _draw_player() -> void:
 	var center: Vector2 = _cell_center(player_pos)
-	var radius: float = TILE_SIZE * 0.4
+	var radius: float = board_tile_size * 0.4
 	var open_amount: float = 0.08
 	if player_moved_last_step:
 		open_amount = 0.08 + 0.26 * (0.5 + 0.5 * sin(mouth_phase))
@@ -395,7 +436,7 @@ func _walkable_neighbor_count(cell: Vector2i) -> int:
 	return count
 
 func _cell_center(cell: Vector2i) -> Vector2:
-	return Vector2(cell.x * TILE_SIZE + TILE_SIZE * 0.5, cell.y * TILE_SIZE + TILE_SIZE * 0.5)
+	return board_origin + Vector2(cell.x * board_tile_size + board_tile_size * 0.5, cell.y * board_tile_size + board_tile_size * 0.5)
 
 func _cell_key(cell: Vector2i) -> String:
 	return "%d,%d" % [cell.x, cell.y]
@@ -406,5 +447,7 @@ func _parse_key(key: String) -> Vector2i:
 
 func _update_hud() -> void:
 	hud_label.text = "Score: %d   Pellets: %d" % [score, pellets.size()]
+	if restart_button != null:
+		restart_button.text = "START / RESTART" if not game_over else "TAP TO RESTART"
 	if not game_over:
 		message_label.text = ""
