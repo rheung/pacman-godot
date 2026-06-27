@@ -4,7 +4,6 @@ const TILE_SIZE := 24
 const MIN_TILE_SIZE := 12.0
 const MAX_TILE_SIZE := 44.0
 const HUD_HEIGHT := 56.0
-const TOUCH_PANEL_SIZE := Vector2(248, 300)
 const MAZE := [
 	"###################",
 	"#........#........#",
@@ -50,7 +49,6 @@ var pellets: Dictionary = {}
 var player_pos := Vector2i(1, 1)
 var player_dir := Vector2i.RIGHT
 var queued_dir := Vector2i.RIGHT
-var touch_dir := Vector2i.ZERO
 var ghosts: Array[Dictionary] = []
 var move_timer := 0.0
 var ghost_timer := 0.0
@@ -72,7 +70,6 @@ var board_tile_size := TILE_SIZE
 var board_origin := Vector2.ZERO
 var hud_label: Label
 var message_label: Label
-var restart_button: Button
 var sfx_player: AudioStreamPlayer
 var sfx_playback: AudioStreamGeneratorPlayback
 
@@ -81,7 +78,6 @@ func _ready() -> void:
 	_build_pellets()
 	_create_ghosts()
 	_create_hud()
-	_create_touch_controls()
 	_create_audio()
 	_update_layout()
 	set_process(true)
@@ -132,44 +128,38 @@ func _create_hud() -> void:
 	canvas.add_child(message_label)
 	_update_hud()
 
-func _create_touch_controls() -> void:
-	var canvas := CanvasLayer.new()
-	add_child(canvas)
+func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventScreenTouch:
+		var touch_event := event as InputEventScreenTouch
+		if touch_event.pressed:
+			if game_over:
+				_restart_game()
+				get_viewport().set_input_as_handled()
+				return
+			_set_touch_direction(touch_event.position)
+			get_viewport().set_input_as_handled()
+	elif event is InputEventScreenDrag:
+		if not game_over:
+			var drag_event := event as InputEventScreenDrag
+			_set_touch_direction(drag_event.position)
+			get_viewport().set_input_as_handled()
+	elif event is InputEventMouseButton:
+		var mouse_event := event as InputEventMouseButton
+		if mouse_event.button_index == MOUSE_BUTTON_LEFT and mouse_event.pressed:
+			if game_over:
+				_restart_game()
+				get_viewport().set_input_as_handled()
+				return
+			_set_touch_direction(mouse_event.position)
+			get_viewport().set_input_as_handled()
 
-	var panel := Control.new()
-	panel.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
-	panel.position = Vector2(12, -TOUCH_PANEL_SIZE.y - 12)
-	panel.size = TOUCH_PANEL_SIZE
-	canvas.add_child(panel)
-
-	_add_touch_button(panel, "U", Vector2(80, 0), Vector2i.UP)
-	_add_touch_button(panel, "L", Vector2(0, 80), Vector2i.LEFT)
-	_add_touch_button(panel, "R", Vector2(160, 80), Vector2i.RIGHT)
-	_add_touch_button(panel, "D", Vector2(80, 160), Vector2i.DOWN)
-
-	restart_button = Button.new()
-	restart_button.text = "START / RESTART"
-	restart_button.position = Vector2(20, 236)
-	restart_button.size = Vector2(208, 44)
-	restart_button.modulate = Color(0.1, 0.1, 0.18, 0.82)
-	restart_button.pressed.connect(_restart_game)
-	panel.add_child(restart_button)
-
-func _add_touch_button(parent: Control, text: String, pos: Vector2, dir: Vector2i) -> void:
-	var b := Button.new()
-	b.text = text
-	b.position = pos
-	b.size = Vector2(72, 72)
-	b.modulate = Color(0.1, 0.1, 0.18, 0.72)
-	parent.add_child(b)
-	b.button_down.connect(func() -> void:
-		touch_dir = dir
-		queued_dir = dir
-	)
-	b.button_up.connect(func() -> void:
-		if touch_dir == dir:
-			touch_dir = Vector2i.ZERO
-	)
+func _set_touch_direction(screen_position: Vector2) -> void:
+	var player_center := _cell_center(player_pos)
+	var delta := screen_position - player_center
+	if absf(delta.x) >= absf(delta.y):
+		queued_dir = Vector2i.RIGHT if delta.x >= 0.0 else Vector2i.LEFT
+	else:
+		queued_dir = Vector2i.DOWN if delta.y >= 0.0 else Vector2i.UP
 
 func _process(delta: float) -> void:
 	if Input.is_action_just_pressed("ui_accept") and game_over:
@@ -212,8 +202,6 @@ func _read_keyboard() -> void:
 		queued_dir = Vector2i.UP
 	elif Input.is_action_pressed("ui_down"):
 		queued_dir = Vector2i.DOWN
-	elif touch_dir != Vector2i.ZERO:
-		queued_dir = touch_dir
 
 func _step_player() -> void:
 	player_moved_last_step = false
@@ -241,9 +229,11 @@ func _activate_scared_mode() -> void:
 	scared_time_left = scared_duration
 	scared_flash_timer = 0.0
 	ghost_combo = 0
+	_play_vulnerable_state_sfx()
 
 func _step_ghosts() -> void:
-	for ghost in ghosts:
+	for i in ghosts.size():
+		var ghost := ghosts[i]
 		var pos: Vector2i = ghost["pos"]
 		var current_dir: Vector2i = ghost["dir"]
 		var options: Array[Vector2i] = []
@@ -270,6 +260,8 @@ func _step_ghosts() -> void:
 					best = d
 		ghost["dir"] = best
 		ghost["pos"] = pos + best
+		ghosts[i] = ghost
+		_play_ghost_move_sfx(i, scared_time_left > 0.0)
 
 func _check_collisions() -> void:
 	for i in ghosts.size():
@@ -302,7 +294,6 @@ func _restart_game() -> void:
 	player_pos = Vector2i(1, 1)
 	player_dir = Vector2i.RIGHT
 	queued_dir = Vector2i.RIGHT
-	touch_dir = Vector2i.ZERO
 	player_moved_last_step = false
 	mouth_phase = 0.0
 	_build_pellets()
@@ -317,20 +308,18 @@ func _update_layout() -> void:
 	var board_width := float(map_size.x * TILE_SIZE)
 	var board_height := float(map_size.y * TILE_SIZE)
 	var fit_width := (viewport_size.x - 16.0) / board_width
-	var fit_height := (viewport_size.y - HUD_HEIGHT - TOUCH_PANEL_SIZE.y - 24.0) / board_height
+	var fit_height := (viewport_size.y - HUD_HEIGHT - 24.0) / board_height
 	var fit_scale := clampf(minf(fit_width, fit_height), 0.5, 2.5)
 	board_tile_size = int(round(TILE_SIZE * fit_scale))
 	var board_pixel_width := float(map_size.x * board_tile_size)
 	var board_pixel_height := float(map_size.y * board_tile_size)
 	board_origin = Vector2(
 		maxf(8.0, (viewport_size.x - board_pixel_width) * 0.5),
-		HUD_HEIGHT + maxf(8.0, (viewport_size.y - HUD_HEIGHT - TOUCH_PANEL_SIZE.y - board_pixel_height) * 0.5)
+		HUD_HEIGHT + maxf(8.0, (viewport_size.y - HUD_HEIGHT - board_pixel_height) * 0.5)
 	)
 	message_label.size = Vector2(map_size.x * board_tile_size, 48)
 	message_label.position = Vector2(0, board_origin.y + board_pixel_height * 0.45)
 	message_label.add_theme_font_size_override("font_size", int(maxf(24.0, board_tile_size * 1.15)))
-	if restart_button != null:
-		restart_button.text = "START / RESTART" if not game_over else "TAP TO RESTART"
 	queue_redraw()
 
 func _draw() -> void:
@@ -402,9 +391,24 @@ func _play_powerup_sfx() -> void:
 	_play_tone(380.0, 0.08, 0.24)
 	_play_tone(620.0, 0.08, 0.24)
 
+func _play_vulnerable_state_sfx() -> void:
+	_play_tone(520.0, 0.06, 0.20)
+	_play_tone(390.0, 0.08, 0.18)
+	_play_tone(260.0, 0.10, 0.16)
+
 func _play_ghost_sfx() -> void:
 	_play_tone(200.0, 0.07, 0.28)
 	_play_tone(160.0, 0.08, 0.28)
+
+func _play_ghost_move_sfx(ghost_index: int, frightened: bool) -> void:
+	var pitch := 180.0 + float(ghost_index) * 42.0
+	var volume := 0.07
+	var duration := 0.025
+	if frightened:
+		pitch *= 0.72
+		volume = 0.05
+		duration = 0.03
+	_play_tone(pitch, duration, volume)
 
 func _play_tone(freq: float, duration: float, volume: float) -> void:
 	if sfx_playback == null:
@@ -447,7 +451,5 @@ func _parse_key(key: String) -> Vector2i:
 
 func _update_hud() -> void:
 	hud_label.text = "Score: %d   Pellets: %d" % [score, pellets.size()]
-	if restart_button != null:
-		restart_button.text = "START / RESTART" if not game_over else "TAP TO RESTART"
 	if not game_over:
 		message_label.text = ""
